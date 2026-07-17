@@ -38,6 +38,10 @@ Toggle module visibility/hidden. PID can be configured in source code
 ```
 kill -63 8000
 ```
+To remove the module once it has been unhidden
+```
+sudo rmmod -f deception
+```
 Gain root privileges. PID can be configured in source code
 ```
 kill -64 31337
