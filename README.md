@@ -1,13 +1,13 @@
 # Deception Rootkit
 
-<b>* IPv6 based LKM rootkit.<br>
+<b>* IPv6 based LKM rootkit.</b> Hooks specifically IPv6 and not IPv4. Use IPv6!</b><br>
 <b>* Process Hiding:</b> Hide multiple processes. You can unhide them one at a time or all at once.<br>
 <b>* Port Hiding:</b> Hide multiple ports using kill signals. Unhide them one at a time or all at once.<br>
 <b>* TCP Connection Hiding:</b> Hide TCP connections on any port based on IPv6 address.<br>
 <b>* Module Hiding:</b> Completely hides itself automatically when loaded into the kernel.<br>
 <b>* Privilege Escalation:</b> The correct kill signal and PID gives root privileges.<br>
 <b>* Kill Signal Obfuscation:</b> You choose the PID number of GET_ROOT and MOD_REVEAL.<br>
-<b>* File/Directory Hiding:</b> Any file or directory starting with secret_ will be hidden.<br><br></b>
+<b>* File/Directory Hiding:</b> Any file or directory starting with secret_ will be hidden.<br><br>
 
 Clone this repository, run make and insert module
 ```
