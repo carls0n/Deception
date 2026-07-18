@@ -1,6 +1,6 @@
 # Deception Rootkit
 
-
+<b>* IPv6 based LKM rootkit.
 <b>* Process Hiding:</b> Hide multiple processes. You can unhide them one at a time or all at once.<br>
 <b>* Port Hiding:</b> Hide multiple ports using kill signals. Unhide them one at a time or all at once.<br>
 <b>* TCP Connection Hiding:</b> Hide TCP connections on any port based on IPv6 address.<br>
@@ -41,7 +41,7 @@ kill -63 8000
 ```
 To remove the module once it has been unhidden
 ```
-sudo rmmod -f rootkit
+sudo rmmod -f deception
 ```
 Gain root privileges. PID can be configured in source code
 ```
