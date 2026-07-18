@@ -6,7 +6,8 @@
 <b>* TCP Connection Hiding:</b> Hide TCP connections on any port based on IPv6 address.<br>
 <b>* Module Hiding:</b> Hides itself when loaded into the kernel. Removes it from /sys/module and /proc/modules<br>
 <b>* Privilege Escalation:</b> The correct kill signal gives root privileges.<br>
-<b>* Kill Signal Obfuscation:</b> You choose the ID number of GET_ROOT and MOD_REVEAL.<br><br>
+<b>* Kill Signal Obfuscation:</b> You choose the ID number of GET_ROOT and MOD_REVEAL.<br>
+<b>* File/Directory Hiding:</b> Any file or directory starting with secret_ will be hidden.<br><br>
 
 Clone this repository, run make and insert module
 ```
