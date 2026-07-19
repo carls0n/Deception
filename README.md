@@ -41,7 +41,7 @@ kill -63 8000
 ```
 To remove the module once it has been unhidden
 ```
-sudo rmmod -f deception
+sudo rmmod deception
 ```
 Gain root privileges. PID can be configured in source code
 ```
