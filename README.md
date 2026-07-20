@@ -2,7 +2,7 @@
 
 <b>* IPv6 based LKM rootkit:</b> Hooks specifically IPv6 and not IPv4. Use IPv6!<br>
 <b>* Process Hiding:</b> Hide multiple processes. You can unhide them one at a time or all at once.<br>
-<b>* Port Hiding:</b> Hide multiple ports using kill signals. Unhide them one at a time or all at once.<br>
+<b>* Port Hiding:</b> Hide multiple ports using a kill signal. Unhide them one at a time or all at once.<br>
 <b>* TCP Connection Hiding:</b> Hide TCP connections on any port based on IPv6 address.<br>
 <b>* Module Hiding:</b> Removes module from /proc/modules as well as /sys/module.<br>
 <b>* Anti-forensics:</b> Prevents advanced memory forensic tools from locating the module's code in memory.<br>
