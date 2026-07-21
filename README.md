@@ -17,6 +17,9 @@ Clone this repository, run make and insert module
 git clone https://github.com/carls0n/deception
 ```
 ```
+cd deception
+```
+```
 make
 ```
 ```
