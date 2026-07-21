@@ -1,4 +1,7 @@
-# Deception Rootkit
+<img width="2848" height="1600" alt="02178462353986477dd13f2098096eba9569e39b59e750cf6e323_0" src="https://github.com/user-attachments/assets/cb0b8fe2-2236-41e1-b93b-564c4c5f3855" />
+
+
+
 
 <b>* IPv6 based LKM rootkit:</b> Hooks specifically IPv6 and not IPv4. Use IPv6!<br>
 <b>* Process Hiding:</b> Hide multiple processes. You can unhide them one at a time or all at once.<br>
