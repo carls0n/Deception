@@ -53,3 +53,5 @@ Gain root privileges. PID can be configured in source code
 kill -64 31337
 ```
 
+You can read my write-up on <a href="https://github.com/carls0n/defeat_rootkit">defeating ftrace based rootkits</a>
+
