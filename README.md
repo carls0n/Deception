@@ -7,7 +7,6 @@
 <b>* Process Hiding:</b> Hide multiple processes. You can unhide them one at a time or all at once.<br>
 <b>* Port Hiding:</b> Hide multiple ports using a kill signal. Unhide them one at a time or all at once.<br>
 <b>* Module Hiding:</b> Removes module from /proc/modules as well as /sys/module.<br>
-<b>* Anti-forensics:</b> Prevents advanced memory forensic tools from locating the module's code in memory.<br>
 <b>* Privilege Escalation:</b> The correct kill signal and PID gives root privileges.<br>
 <b>* Kill Signal Obfuscation:</b> You choose the PID number of GET_ROOT and MOD_REVEAL.<br>
 <b>* File/Directory Hiding:</b> Any file or directory starting with secret_ will be hidden.<br><br>
