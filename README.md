@@ -53,5 +53,4 @@ Gain root privileges. PID can be configured in source code
 kill -64 31337
 ```
 
-You.might also enjoy reading <a href="https://carls0n.github.io">defeating ftrace based LKM rootkits for fun and profit</a>
-
+You might also enjoy reading <a href="https://carls0n.github.io">defeating LKM and LD_PRELOAD rootkits for fun and profit</a>
